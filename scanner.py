@@ -3,6 +3,8 @@ import threading
 import queue
 import subprocess
 import platform
+import json
+import argparse
 from ipaddress import ip_address, ip_network
 from tqdm import tqdm
 
@@ -24,6 +26,14 @@ class PortScanner:
         if self.verbose:
             print(message)
 
+    def grab_banner(self, s):
+        try:
+            s.settimeout(1)
+            banner = s.recv(1024).decode().strip()
+            return banner if banner else "No banner"
+        except:
+            return "No banner"
+
     def scan_tcp_port(self, ip, port):
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -33,19 +43,25 @@ class PortScanner:
                 service = socket.getservbyport(port, 'tcp')
             except:
                 service = 'Unknown'
+
+            banner = self.grab_banner(s)
+
             self.open_ports.append(
-                {"ip": ip, "port": port, "service": service, "status": "OPEN"})
+                {"ip": ip, "port": port, "service": service, "status": "OPEN", "banner": banner})
             self.log(f"[OPEN] {ip}:{port} ({service})")
         except socket.timeout:
             self.filtered_ports.append(
                 {"ip": ip, "port": port, "status": "FILTERED (timeout)"})
+            self.log(f"[FILTERED] {ip}:{port} (timeout)")
         except ConnectionRefusedError:
             self.closed_ports.append(
                 {"ip": ip, "port": port, "status": "CLOSED"})
+            self.log(f"[CLOSED] {ip}:{port}")
         except OSError as e:
             if e.errno == 113:
                 self.filtered_ports.append(
                     {"ip": ip, "port": port, "status": "FILTERED (no route to host)"})
+                self.log(f"[FILTERED] {ip}:{port} (no route to host)")
         finally:
             s.close()
 
@@ -60,7 +76,9 @@ class PortScanner:
             if result.returncode == 0:
                 self.live_hosts.append(str(ip))
                 self.log(f"[LIVE] Host {ip} is ONLINE")
- 
+            else:
+                self.log(f"[DEAD] Host {ip} is OFFLINE")
+
         hosts = list(ip_network(network, strict=False).hosts())
         iterator = hosts if self.verbose else tqdm(
             hosts, desc="Sweep Progress")
@@ -126,20 +144,15 @@ class PortScanner:
             print("\nOpen Ports:")
             for port_info in sorted(self.open_ports, key=lambda x: (x['ip'], x['port'])):
                 service = port_info.get('service', 'Unknown')
+                banner = port_info.get('banner', 'No banner')
                 print(
-                    f"  - {port_info['ip']}: Port {port_info['port']} ({service}) is {port_info['status']}")
+                    f"  - {port_info['ip']}: Port {port_info['port']} ({service}) is {port_info['status']} - Banner: {banner}")
 
         if self.filtered_ports:
             print("\nFiltered Ports:")
             for port_info in sorted(self.filtered_ports, key=lambda x: (x['ip'], x['port'])):
                 print(
                     f"  - {port_info['ip']}: Port {port_info['port']} is {port_info['status']}")
-
-        # if self.closed_ports:
-        #     print("\nClosed Ports:")
-        #     for port_info in sorted(self.closed_ports, key=lambda x: (x['ip'], x['port'])):
-        #         print(
-        #             f"  - {port_info['ip']}: Port {port_info['port']} is {port_info['status']}")
 
     def run(self, sweep=False, port_scan=False, sweep_and_scan=False):
         try:

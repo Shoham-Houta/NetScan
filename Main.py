@@ -3,24 +3,16 @@ import argparse
 from tqdm import tqdm
 
 def main():
-    parser = argparse.ArgumentParser(description="Network Scanner Tool")
-    parser.add_argument(
-        "target", help="Target IP or network (e.g., 192.168.1.0/24)")
-    parser.add_argument("--sweep","-nP", action="store_true",
-                        help="Perform sweep scan only")
-    parser.add_argument("--port-scan","-sP", action="store_true",
-                        help="Perform port scan only")
-    parser.add_argument("--sweep-port","-wP", action="store_true",
-                        help="Perform sweep and scan ports on live hosts")
-    parser.add_argument(
-        "--protocol", choices=["TCP", "UDP"], default="TCP", help="Choose between TCP or UDP")
-    parser.add_argument("--threads", type=int, default=100,
-                        help="Number of threads")
-    parser.add_argument("--ports","-p", nargs=2, type=int,
-                        default=(1, 1024), help="Port range (start end)")
-    parser.add_argument("--verbose","-v", action="store_true",
-                        help="Enable verbose output")
 
+    parser = argparse.ArgumentParser(description="Network Scanner Tool")
+    parser.add_argument("target", help="Target IP or network (e.g., 192.168.1.0/24)")
+    parser.add_argument("--sweep", "-s", action="store_true", help="Perform sweep scan only")
+    parser.add_argument("--port-scan", "-p", action="store_true", help="Perform port scan only")
+    parser.add_argument("--sweep-port", "-sp", action="store_true", help="Perform sweep and scan ports on live hosts")
+    parser.add_argument("--protocol", "-pr", choices=["TCP", "UDP"], default="TCP", help="Choose between TCP or UDP")
+    parser.add_argument("--threads", "-t", type=int, default=100, help="Number of threads")
+    parser.add_argument("--ports", "-P", nargs=2, type=int, default=(1, 1024), help="Port range (start end)")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
     args = parser.parse_args()
 
     scanner = PortScanner(args.target, port_range=tuple(
