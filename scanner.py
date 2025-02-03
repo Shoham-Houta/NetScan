@@ -1,6 +1,9 @@
 import socket
 import threading
 import queue
+import subprocess
+import platform
+import re
 
 
 class PortScanner:
@@ -13,16 +16,15 @@ class PortScanner:
         self.open_ports = []
         self.filtered_ports = []
         self.closed_ports = []
+        self.live_hosts = []
 
     def scan_tcp_port(self, port):
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(0.5)
             s.connect((self.target, port))
-
             print(f"[+] TCP Port {port} is OPEN")
             self.open_ports.append((port, socket.getservbyport(port)))
-            s.close()
         except socket.timeout:
             print(f"[!] TCP Port {port} is FILTERED (timeout)")
             self.filtered_ports.append((port, socket.getservbyport(port)))
@@ -33,16 +35,38 @@ class PortScanner:
             if e.errno == 113:
                 print(f"[!] TCP Port {port} is FILTERED (no route to host)")
                 self.filtered_ports.append(port)
-            else:
-                pass
         finally:
             s.close()
+
+    def sweep_scan(self, network):
+        print(f"Scanning network: {network}.0/24")
+        param = "-n" if platform.system().lower() == "windows" else "-c"
+
+        def ping_host(ip):
+            command = ["ping", param, "1", ip]
+            result = subprocess.run(
+                command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if result.returncode == 0:
+                print(f"[+] Host {ip} is ONLINE")
+                self.live_hosts.append(ip)
+            else:
+                print(f"[-] Host {ip} is OFFLINE or FILTERED")
+
+        threads = []
+        for i in range(1, 255):
+            ip = f"{network}.{i}"
+            thread = threading.Thread(target=ping_host, args=(ip,))
+            thread.start()
+            threads.append(thread)
+
+        for thread in threads:
+            thread.join()
 
     def scan_udp_port(self, port):
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.settimeout(1)
-            s.sendto(b"test", (self.target, port))  # sending a dummy packet
+            s.sendto(b"test", (self.target, port))
             data, _ = s.recvfrom(1024)
             print(f"[+] UDP Port {port} is OPEN")
             self.open_ports.append(port)
@@ -72,6 +96,13 @@ class PortScanner:
         print(
             f"Scanning {self.target} from port {self.port_range[0]} to {self.port_range[1]} using {self.protocol}...")
 
+        # If target is a network (e.g., 192.168.1.0), perform sweep scan
+        if re.match(r"\d+\.\d+\.\d+\.0", self.target):
+            network = self.target.rsplit('.', 1)[0]  # Extract network portion
+            self.sweep_scan(network)
+            print(f"Live Hosts: {self.live_hosts}")
+            return  # Skip port scan if it's a sweep
+
         # Fill the queue with ports to scan
         for port in range(self.port_range[0], self.port_range[1] + 1):
             self.port_queue.put(port)
@@ -90,4 +121,3 @@ class PortScanner:
         print("\nScan complete.")
         print(f"Open Ports: {self.open_ports}")
         print(f"Filtered Ports: {self.filtered_ports}")
-        # print(f"Closed Ports: {self.closed_ports}")
