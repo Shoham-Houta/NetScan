@@ -1,0 +1,6 @@
+Add SBG (service banner gruber)
+Add CIDR notation support (e.g. 192.168.1.0/24)
+Add Parallel port scan on live hosts
+Add Parse and export results to CSV/JSON/XML
+Add Stealth scans
+Add Rate limit to avoid detection
