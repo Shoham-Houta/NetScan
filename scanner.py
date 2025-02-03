@@ -3,58 +3,70 @@ import threading
 import queue
 import subprocess
 import platform
-import re
+from ipaddress import ip_address, ip_network
+from tqdm import tqdm
 
 
 class PortScanner:
-    def __init__(self, target, port_range=(1, 1024), num_threads=50, protocol="TCP"):
+    def __init__(self, target, port_range=(1, 1024), num_threads=100, protocol="TCP", verbose=False):
         self.target = target
         self.port_range = port_range
         self.num_threads = num_threads
         self.protocol = protocol.upper()
-        self.port_queue = queue.Queue()
+        self.verbose = verbose
+        self.task_queue = queue.Queue()
         self.open_ports = []
         self.filtered_ports = []
         self.closed_ports = []
         self.live_hosts = []
 
-    def scan_tcp_port(self, port):
+    def log(self, message):
+        if self.verbose:
+            print(message)
+
+    def scan_tcp_port(self, ip, port):
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(0.5)
-            s.connect((self.target, port))
-            print(f"[+] TCP Port {port} is OPEN")
-            self.open_ports.append((port, socket.getservbyport(port)))
+            s.connect((ip, port))
+            try:
+                service = socket.getservbyport(port, 'tcp')
+            except:
+                service = 'Unknown'
+            self.open_ports.append(
+                {"ip": ip, "port": port, "service": service, "status": "OPEN"})
+            self.log(f"[OPEN] {ip}:{port} ({service})")
         except socket.timeout:
-            print(f"[!] TCP Port {port} is FILTERED (timeout)")
-            self.filtered_ports.append((port, socket.getservbyport(port)))
+            self.filtered_ports.append(
+                {"ip": ip, "port": port, "status": "FILTERED (timeout)"})
         except ConnectionRefusedError:
-            print(f"[-] TCP Port {port} is CLOSED")
-            self.closed_ports.append(port)
+            self.closed_ports.append(
+                {"ip": ip, "port": port, "status": "CLOSED"})
         except OSError as e:
             if e.errno == 113:
-                print(f"[!] TCP Port {port} is FILTERED (no route to host)")
-                self.filtered_ports.append(port)
+                self.filtered_ports.append(
+                    {"ip": ip, "port": port, "status": "FILTERED (no route to host)"})
         finally:
             s.close()
 
     def sweep_scan(self, network):
-        print(f"Scanning network: {network}.0/24")
+        print(f"Scanning network: {network}")
         param = "-n" if platform.system().lower() == "windows" else "-c"
 
         def ping_host(ip):
-            command = ["ping", param, "1", ip]
+            command = ["ping", param, "1", str(ip)]
             result = subprocess.run(
                 command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             if result.returncode == 0:
-                print(f"[+] Host {ip} is ONLINE")
-                self.live_hosts.append(ip)
-            else:
-                print(f"[-] Host {ip} is OFFLINE or FILTERED")
+                self.live_hosts.append(str(ip))
+                self.log(f"[LIVE] Host {ip} is ONLINE")
+ 
+        hosts = list(ip_network(network, strict=False).hosts())
+        iterator = hosts if self.verbose else tqdm(
+            hosts, desc="Sweep Progress")
 
         threads = []
-        for i in range(1, 255):
-            ip = f"{network}.{i}"
+        for ip in iterator:
             thread = threading.Thread(target=ping_host, args=(ip,))
             thread.start()
             threads.append(thread)
@@ -62,62 +74,106 @@ class PortScanner:
         for thread in threads:
             thread.join()
 
-    def scan_udp_port(self, port):
+    def enqueue_tasks(self, hosts):
+        for ip in hosts:
+            for port in range(self.port_range[0], self.port_range[1] + 1):
+                self.task_queue.put((ip, port))
+
+    def scan_udp_port(self, ip, port):
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.settimeout(1)
-            s.sendto(b"test", (self.target, port))
+            s.sendto(b"test", (ip, port))
             data, _ = s.recvfrom(1024)
-            print(f"[+] UDP Port {port} is OPEN")
-            self.open_ports.append(port)
+            self.open_ports.append({"ip": ip, "port": port, "status": "OPEN"})
+            self.log(f"[OPEN] {ip}:{port} (UDP)")
         except socket.timeout:
-            print(f"[!] UDP Port {port} may be OPEN or FILTERED (no response)")
-            self.filtered_ports.append(port)
+            self.filtered_ports.append(
+                {"ip": ip, "port": port, "status": "FILTERED (no response)"})
+            self.log(f"[FILTERED] {ip}:{port} (no response)")
         except OSError as e:
             if e.errno == 113:
-                print(f"[!] UDP Port {port} is FILTERED (no route to host)")
-                self.filtered_ports.append(port)
+                self.filtered_ports.append(
+                    {"ip": ip, "port": port, "status": "FILTERED (no route to host)"})
+                self.log(f"[FILTERED] {ip}:{port} (no route to host)")
             else:
-                print(f"[-] UDP Port {port} is CLOSED")
-                self.closed_ports.append(port)
+                self.closed_ports.append(
+                    {"ip": ip, "port": port, "status": "CLOSED"})
+                self.log(f"[CLOSED] {ip}:{port}")
         finally:
             s.close()
 
-    def worker(self):
-        while not self.port_queue.empty():
-            port = self.port_queue.get()
+    def worker(self, progress_bar=None):
+        while not self.task_queue.empty():
+            ip, port = self.task_queue.get()
             if self.protocol == "TCP":
-                self.scan_tcp_port(port)
+                self.scan_tcp_port(ip, port)
             elif self.protocol == "UDP":
-                self.scan_udp_port(port)
-            self.port_queue.task_done()
+                self.scan_udp_port(ip, port)
+            self.task_queue.task_done()
+            if progress_bar:
+                progress_bar.update(1)
 
-    def run(self):
-        print(
-            f"Scanning {self.target} from port {self.port_range[0]} to {self.port_range[1]} using {self.protocol}...")
+    def display_results(self):
+        print("\n===== Scan Results =====")
 
-        # If target is a network (e.g., 192.168.1.0), perform sweep scan
-        if re.match(r"\d+\.\d+\.\d+\.0", self.target):
-            network = self.target.rsplit('.', 1)[0]  # Extract network portion
+        if self.live_hosts:
+            print("Live Hosts:")
+            for ip in sorted(self.live_hosts, key=lambda x: ip_address(x)):
+                print(f"  - {ip} (ONLINE)")
+
+        if self.open_ports:
+            print("\nOpen Ports:")
+            for port_info in sorted(self.open_ports, key=lambda x: (x['ip'], x['port'])):
+                service = port_info.get('service', 'Unknown')
+                print(
+                    f"  - {port_info['ip']}: Port {port_info['port']} ({service}) is {port_info['status']}")
+
+        if self.filtered_ports:
+            print("\nFiltered Ports:")
+            for port_info in sorted(self.filtered_ports, key=lambda x: (x['ip'], x['port'])):
+                print(
+                    f"  - {port_info['ip']}: Port {port_info['port']} is {port_info['status']}")
+
+        # if self.closed_ports:
+        #     print("\nClosed Ports:")
+        #     for port_info in sorted(self.closed_ports, key=lambda x: (x['ip'], x['port'])):
+        #         print(
+        #             f"  - {port_info['ip']}: Port {port_info['port']} is {port_info['status']}")
+
+    def run(self, sweep=False, port_scan=False, sweep_and_scan=False):
+        try:
+            network = ip_network(self.target, strict=False)
+        except ValueError:
+            network = None
+
+        if sweep and network:
             self.sweep_scan(network)
-            print(f"Live Hosts: {self.live_hosts}")
-            return  # Skip port scan if it's a sweep
+            self.display_results()
 
-        # Fill the queue with ports to scan
-        for port in range(self.port_range[0], self.port_range[1] + 1):
-            self.port_queue.put(port)
+        if port_scan:
+            hosts = [str(host) for host in network.hosts()
+                     ] if network else [self.target]
+            self.enqueue_tasks(hosts)
 
-        # Start worker threads
+        if sweep_and_scan and network:
+            self.sweep_scan(network)
+            self.enqueue_tasks(self.live_hosts)
+
+        total_tasks = self.task_queue.qsize()
+        progress_bar = tqdm(
+            total=total_tasks, desc="Port Scan Progress") if not self.verbose else None
+
         threads = []
         for _ in range(self.num_threads):
-            thread = threading.Thread(target=self.worker)
+            thread = threading.Thread(target=self.worker, args=(progress_bar,))
             thread.start()
             threads.append(thread)
 
-        # Wait for all threads to finish
         for thread in threads:
             thread.join()
 
-        print("\nScan complete.")
-        print(f"Open Ports: {self.open_ports}")
-        print(f"Filtered Ports: {self.filtered_ports}")
+        if progress_bar:
+            progress_bar.close()
+
+        self.display_results()
